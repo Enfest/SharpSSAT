@@ -18,8 +18,6 @@
 
 #include <iostream>
 #include <regex>
-#include <chrono>
-#include <thread>
 
 
 using namespace std;
@@ -133,12 +131,5 @@ int main(int argc, char *argv[]) {
     cout << "maximum satisfying probability written to " << prob_file << endl;
     theSolver.generateCertificate(upTrace_file, lowTrace_file, prob_file);
   }
-  
-  // Explicit cleanup to avoid segmentation fault during program termination
-  cout << "Cleaning up..." << endl;
-  
-  // Small delay to allow cleanup to complete
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  
   return 0;
 }

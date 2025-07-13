@@ -7,9 +7,14 @@
 
 #include "instance.h"
 
+
 #include <algorithm>
 #include <fstream>
 #include <sys/stat.h>
+#include <iostream>
+#include <vector>
+#include <map>
+
 
 using namespace std;
 
@@ -262,7 +267,7 @@ bool Instance::markClauseDeleted(ClauseOfs cl_ofs){
 }
 
 
-bool Instance::createfromFile(const string &file_name) {
+bool Instance::createfromFile(const string &file_name, SolverConfiguration& config) {
   unsigned int nVars, nCls;
   int lit, var;
   float prob;
@@ -322,6 +327,9 @@ bool Instance::createfromFile(const string &file_name) {
   var2Lev_.clear();
   var2Lev_.resize(nVars+1, -1);
 
+  // clauses stored in CNF format for each quantifier level
+  vector<vector<int>> all_clauses;
+
 
   while ((input_file >> c) && clauses_added < nCls) {
     if ((c == '-') || isdigit(c)) {
@@ -354,6 +362,13 @@ bool Instance::createfromFile(const string &file_name) {
           for (auto l : literals){
             occurrence_lists_[l].push_back(cl_ofs);
           }
+
+        vector<int> clause;
+        // Add all literals to all_clauses for cadical
+        for (auto l : literals) {
+          clause.push_back(l.toInt());
+        }
+        all_clauses.push_back(clause);
       }
     }
     else if( c=='r' || c=='e' || c=='a' ){ // reading prefix for ssat
@@ -431,6 +446,168 @@ bool Instance::createfromFile(const string &file_name) {
       unit_clauses_.size();
 
   original_lit_pool_size_ = literal_pool_.size();
+
+  for(size_t i = 0; i < statistics_.num_variables_; i++) {
+    cout << "variable " << i << " has level " << var2Lev_[i] << endl;
+  }
+  
+  // Track maximum variable for cadical solution extraction
+  // max_variable_ = nVars;
+
+  for (auto clause : all_clauses) {
+    cout << "Clause: ";
+    for (auto lit : clause) {
+      cout << lit << " ";
+    }
+    cout << endl;
+  }
+
+  if(config.perform_independent_solving) {
+
+    cout << "Performing independent solving" << endl;
+
+    cout << "num_qlev: " << statistics_.num_qlev << endl;
+
+    // Initialize var_assignment_
+    var_assignment_.clear();
+    // Size var_assignment_ to handle all possible variable indices
+    // The component analyzer uses max_variable_id_ = literals.end_lit().var() - 1
+    // which is literals.size()/2 - 1, so we need at least that many elements
+    unsigned max_var_id = literals_.size() / 2;
+    var_assignment_.resize(max_var_id + 1, -1);
+    
+    // Initialize cadical solvers for each quantifier level
+    cout << "Initializing cadical solvers for " << statistics_.num_qlev << " levels..." << endl;
+    level_cadical_solvers_.clear();
+    level_cadical_solvers_.reserve(statistics_.num_qlev + 1);
+    
+    for(size_t i = 0; i < statistics_.num_qlev + 1; i++) {
+      try {
+        CaDiCaLWrapper* solver = new CaDiCaLWrapper();
+        if (!solver) {
+          cerr << "Failed to allocate CaDiCaLWrapper for level " << i << endl;
+          return false;
+        }
+
+        if (!solver->init()) {
+          cerr << "Failed to initialize cadical solver for level " << i << endl;
+          delete solver;
+          return false;
+        }
+
+        level_cadical_solvers_.push_back(solver);
+        cout << "cadical solver " << i << " initialized successfully" << endl;
+
+        if(config.cadical_conflict_limit > 0) {
+          solver->set_conflict_limit(config.cadical_conflict_limit);
+        }
+        // else{
+        //   solver->set_conflict_limit(1000000);
+        // }
+        if(config.cadical_decision_limit > 0) {
+          solver->set_decision_limit(config.cadical_decision_limit);
+        }
+        // else{
+        //   solver->set_decision_limit(1000000);
+        // }
+
+        
+      } catch (const std::exception& e) {
+        cerr << "Exception while creating cadical solver for level " << i << ": " << e.what() << endl;
+        return false;
+      } catch (...) {
+        cerr << "Unknown exception while creating cadical solver for level " << i << endl;
+        return false;
+      }
+    }
+
+    cout << "Successfully initialized " << level_cadical_solvers_.size() << " cadical solvers" << endl;
+
+    // Calculate maximum variable number for cadical reservation
+    int max_cadical_var = 3*statistics_.num_variables_;
+    
+    // Check if we exceed cadical's maximum variable limit (1,073,741,823)
+    const int CADICAL_MAX_VAR = 3*statistics_.num_variables_;
+    if (max_cadical_var > CADICAL_MAX_VAR) {
+        cerr << "Error: Maximum variable number " << max_cadical_var 
+             << " exceeds cadical's limit of " << CADICAL_MAX_VAR << endl;
+        cerr << "This problem is too large for cadical integration." << endl;
+        return false;
+    }
+    
+    // Reserve variables in all cadical solvers
+    for(size_t i = 0; i < level_cadical_solvers_.size(); i++) {
+        level_cadical_solvers_[i]->reserve(max_cadical_var);
+        cout << "Reserved " << max_cadical_var << " variables in cadical solver " << i << endl;
+    }
+
+    // add clauses to cadical solvers
+    for(size_t i = 0; i < statistics_.num_qlev + 1; i++) {
+
+      cout << "Adding clauses to cadical solver for level " << i << endl;
+      for(auto clause : all_clauses) {
+        size_t max_level = 0;
+        for(auto lit : clause) 
+          if(var2Lev_[std::abs(lit)] > max_level) max_level = var2Lev_[std::abs(lit)];
+        for(auto lit : clause) {
+          cout << lit << " ";
+        }
+        cout << endl;
+        level_cadical_solvers_[i]->add_clause(clause);
+        if(i <= max_level) {
+          for(auto lit : clause) {
+            if(var2Lev_[std::abs(lit)] >= i) {
+              int new_lit = lit > 0? lit+statistics_.num_variables_ : lit-statistics_.num_variables_;
+              level_cadical_solvers_[i]->add_literal(new_lit);
+              cout << new_lit << " ";
+            }
+            else{
+              level_cadical_solvers_[i]->add_literal(lit);
+              cout << lit << " ";
+            }
+          }
+          cout << endl;
+          level_cadical_solvers_[i]->add_literal(0);
+        }
+      }
+
+    }
+
+    // add zi -> (xi == yi) to cadical solver for level i
+    // zi -> (xi + -yi)(-xi + yi) => -zi + (xi + -yi)(-xi + yi)
+    // (-zi + xi + -yi)(-zi + -xi + yi)
+
+    cout << "Adding zi -> (xi == yi) to cadical solvers" << endl;
+    cout << "level_cadical_solvers_.size(): " << level_cadical_solvers_.size() << endl;
+
+    for(size_t i=1; i<=statistics_.num_variables_; i++) {
+      int solver_index = var2Lev_[i];
+      // Skip variables that don't have a valid level (not in prefix)
+      if (solver_index < 0) {
+        cout << "Skipping variable " << i << " (no level assigned)" << endl;
+        continue;
+      }
+      
+      // Check bounds
+      if (solver_index >= (int)level_cadical_solvers_.size()) {
+        cerr << "Error: solver_index " << solver_index << " out of bounds for variable " << i << endl;
+        return false;
+      }
+      
+      vector<int> clause1 = {-(int)(i+statistics_.num_variables_*2), (int)i, -(int)(i+statistics_.num_variables_)};
+      vector<int> clause2 = {-(int)(i+statistics_.num_variables_*2), -(int)i, (int)(i+statistics_.num_variables_)};
+
+      level_cadical_solvers_[solver_index]->add_clause(clause1);
+      level_cadical_solvers_[solver_index]->add_clause(clause2);
+
+      cout << "Added clause to cadical solver for level " << solver_index << endl;
+      cout << "Clause: " << -(int)((i+statistics_.num_variables_*2)) << " " << (int)i << " " << -(int)(i+statistics_.num_variables_) << " " << 0 << endl;
+      cout << "Clause: " << -(int)(i+statistics_.num_variables_*2) << " " << -(int)i << " " << (int)(i+statistics_.num_variables_) << " " << 0 << endl;
+    }
+
+    // solve each level
+  }
+  cout << "About to return from createfromFile" << endl;
 
   return true;
 }

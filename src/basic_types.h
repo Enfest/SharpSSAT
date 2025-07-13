@@ -89,6 +89,8 @@ enum SOLVER_StateT {
 
 struct SolverConfiguration {
 
+  // General SSAT solving configuration
+
   bool ssat_solving = false;
   bool include_forall = false;
   bool perform_component_caching = true;
@@ -103,6 +105,13 @@ struct SolverConfiguration {
   bool certificate_generation = false;
   bool vsads_freq = true;
   bool vsads_act = true;
+  bool perform_independent_solving = true;
+
+  // cadical configuration
+  bool cadical_incremental = true;
+  unsigned cadical_conflict_limit = 0; // Conflict limit for cadical
+  unsigned cadical_decision_limit = 0; // Decision limit for cadical
+  int cadical_time_limit = 10;         // Time limit for cadical (seconds)
 
   unsigned long time_bound_seconds = 100000;
   unsigned long maximum_cache_size_bytes = 0;

@@ -195,10 +195,17 @@ void Solver::HardWireAndCompact() {
 }
 
 bool Solver::solve(const string &file_name) {
+
+  cout << "In original solve" << endl;
   stopwatch_.start();
   statistics_.input_file_ = file_name;
 
-  if (!createfromFile(file_name)) return false;
+  cout << "About to call createfromFile..." << endl;
+  if (!createfromFile(file_name, config_)) {
+    cout << "createfromFile failed" << endl;
+    return false;
+  }
+  cout << "createfromFile completed successfully" << endl;
   initStack(num_variables());
   if(config_.strategy_generation || config_.compile_DNNF || config_.certificate_generation)
     initTrace();
@@ -235,13 +242,20 @@ bool Solver::solve(const string &file_name) {
     component_analyzer_.initialize(literals_, literal_pool_, var2Q_);
 
 
-    statistics_.exit_state_ = config_.ssat_solving ? countSSAT() : countSAT();
+    SOLVER_StateT result = config_.ssat_solving ? countSSAT() : countSAT();
+    statistics_.exit_state_ = result;
 
-    if(config_.ssat_solving){
-      statistics_.set_final_solution_prob(assert_prob_*stack_.top().getTotalSatProb());
-    }
-    else{
-      statistics_.set_final_solution_count(stack_.top().getTotalModelCount());
+    if (result == TIMEOUT) {
+      cout << "Solver reached timeout limit" << endl;
+      statistics_.set_final_solution_prob(0.0);
+      statistics_.set_final_solution_count(0);
+    } else if (result == SUCCESS) {
+      if(config_.ssat_solving){
+        statistics_.set_final_solution_prob(assert_prob_*stack_.top().getTotalSatProb());
+      }
+      else{
+        statistics_.set_final_solution_count(stack_.top().getTotalModelCount());
+      }
     }
     statistics_.num_long_conflict_clauses_ = num_conflict_clauses();
     statistics_.cache_bytes_memory_usage_ =
@@ -282,6 +296,11 @@ bool Solver::solve(const string &file_name) {
   statistics_.writeToFile("data.out");
   if(!SolverConfiguration::quiet)
     statistics_.printShort();
+
+  // // Print independent support cache statistics if independent solving was used
+  // if(config_.perform_independent_solving) {
+  //   printIndependentSupportCacheStats();
+  // }
 
   return true;
 }
@@ -335,8 +354,10 @@ SOLVER_StateT Solver::countSSAT() {
       if(config_.strategy_generation || config_.compile_DNNF || config_.certificate_generation)
         setPureLiteralsOnTrace();
       ssatDecideLiteral();
-      if (stopwatch_.timeBoundBroken())
+      if (stopwatch_.timeBoundBroken()) {
+        cout << "SharpSSAT timeout reached" << endl;
         return TIMEOUT;
+      }
       if (stopwatch_.interval_tick())
         printOnlineStats();
 
@@ -407,7 +428,7 @@ void Solver::decideLiteral() {
 
 bool Solver::ssatDecideLiteral() {
   // establish another decision stack level
-  // cout << "New Stack " << stack_.size() << ", Comp " << stack_.top().currentRemainingComponent() << endl;
+  cout << "New Stack " << stack_.size() << endl;
   stack_.push_back(
       StackLevel(stack_.top().currentRemainingComponent(),
           literal_stack_.size(), component_analyzer_.component_stack_size()));
@@ -417,10 +438,24 @@ bool Solver::ssatDecideLiteral() {
   float score;
   unsigned max_score_var = 0;
   int max_score_lev = statistics_.num_qlev + 1 ;
+  int test_lev = statistics_.num_qlev+1;
   for (auto it = component_analyzer_.superComponentOf(stack_.top()).varsBegin();
       *it != varsSENTINEL; it++) {
     if( !isActive( LiteralID(*it, false) )) continue;
+    if(qlev(*it) < test_lev) test_lev = qlev(*it);
+    // cout << "Var: " << *it << ", Qlev: " << qlev(*it) << endl;
+    // cout << "Var: " << *it << ", lev: " << level_independent_support[qlev(*it)].size() << endl;
+    if(config_.perform_independent_solving && qlev(*it) >= 0 && qlev(*it) < (int)level_independent_support.size() && (level_independent_support[qlev(*it)].size() > 0 && level_independent_support[qlev(*it)].find(*it) == level_independent_support[qlev(*it)].end())){
+      continue;
+    }
     score = scoreOf(*it);
+    // Bounds check for var_assignment_
+    if (*it < var_assignment_.size()) {
+      var_assignment_[*it] = -1;
+    } else {
+      cerr << "Warning: Variable index " << *it << " exceeds var_assignment_ size " << var_assignment_.size() << endl;
+      continue;
+    }
     if( qlev(*it) < max_score_lev ){
       max_score = score;
       max_score_var = *it;
@@ -433,6 +468,50 @@ bool Solver::ssatDecideLiteral() {
     }
   }
 
+  // cout << "Max lev: " << max_score_lev << ", current level: " << current_level_ << endl;
+
+  if(config_.perform_independent_solving){
+    if(max_score_lev > current_level_ || test_lev < current_level_){
+      if(test_lev == max_score_lev) find_independent_support(max_score_lev);
+      else find_independent_support(test_lev);
+      cout << "after solving independent support" << endl;
+      current_level_ = max_score_lev;
+      max_score = -1;
+      max_score_var = 0;
+      max_score_lev = statistics_.num_qlev + 1;
+      for (auto it = component_analyzer_.superComponentOf(stack_.top()).varsBegin();
+      *it != varsSENTINEL; it++) {
+        // cout << "Ind Var: " << *it << ", lev: " << qlev(*it) << endl;
+        if( !isActive( LiteralID(*it, false) )) continue;
+        if(config_.perform_independent_solving && qlev(*it) >= 0 && qlev(*it) < (int)level_independent_support.size() && (level_independent_support[qlev(*it)].size() > 0 && level_independent_support[qlev(*it)].find(*it) == level_independent_support[qlev(*it)].end())){
+          continue;
+        }
+        
+        score = scoreOf(*it);
+        var_assignment_[*it] = -1;
+        if( qlev(*it) < max_score_lev ){
+          max_score = score;
+          max_score_var = *it;
+          max_score_lev = qlev(*it);
+        }
+        else if ( (score > max_score) && (qlev(*it) == max_score_lev) ) {
+          max_score = score;
+          max_score_var = *it;
+          max_score_lev = qlev(*it);
+        }
+      }
+    }
+    else if(max_score_lev < current_level_){
+      if(current_level_ >= 0 && current_level_ < (int)level_independent_support.size()) {
+        level_independent_support[current_level_].clear();
+      }
+      current_level_ = max_score_lev;
+    }
+    
+  }
+
+  cout << "Max score var: " << max_score_var << ", max score lev: " << max_score_lev << endl;
+
   // this assert should always hold,
   // if not then there is a bug in the logic of countSAT();
   assert(max_score_var != 0);
@@ -441,6 +520,14 @@ bool Solver::ssatDecideLiteral() {
       literal(LiteralID(max_score_var, true)).activity_score_
           > literal(LiteralID(max_score_var, false)).activity_score_);
 
+  // Bounds check for var_assignment_
+  if (max_score_var < var_assignment_.size()) {
+    var_assignment_[max_score_var] = literal(LiteralID(max_score_var, true)).activity_score_
+            > literal(LiteralID(max_score_var, false)).activity_score_?0:1;
+  } else {
+    cerr << "Error: max_score_var " << max_score_var << " exceeds var_assignment_ size " << var_assignment_.size() << endl;
+    return false;
+  }
   setLiteralIfFree(theLit);
 
   setState(STATE_ASSERTION_PENDING);
@@ -459,11 +546,165 @@ bool Solver::ssatDecideLiteral() {
     n->setDecVar(theLit.var(), qType(theLit)==RANDOM, qType(theLit)==UNIVERSAL, theLit.sign());
     stack_.top().setNode(n);
   }
-  // cout << "Decide " << theLit.toInt() << endl;
+  cout << "Decide " << theLit.toInt() << endl;
 
   return true;
   assert(
       stack_.top().remaining_components_ofs() <= component_analyzer_.component_stack_size());
+}
+
+void Solver::find_independent_support(int level){
+
+  // Check bounds for level_independent_support
+  if(level < 0 || level >= (int)level_independent_support.size()) {
+    cerr << "Warning: level " << level << " is out of bounds for level_independent_support (size: " << level_independent_support.size() << ")" << endl;
+    return;
+  }
+
+  // clear level_independent_support[level]
+  level_independent_support[level].clear();
+
+  vector<int> undecided_vars;
+  vector<int> decided_vars;
+  for(auto it = component_analyzer_.superComponentOf(stack_.top()).varsBegin();
+      *it != varsSENTINEL; it++){
+    if( !isActive( LiteralID(*it, false) )) continue;
+    if(var2Lev_[*it] == level) undecided_vars.emplace_back(*it);
+  }
+
+  if (undecided_vars.size() < 10) return;
+  // print undecided_vars
+  cout << "Undecided vars (" << level << "): " << undecided_vars.size() << endl;
+  for(auto var : undecided_vars) cout << var << " ";
+  cout << endl;
+
+  for(int i = 1; i <= statistics_.num_variables_; i++){
+    if(i < var_assignment_.size() && var_assignment_[i] != -1 && var2Lev_[i] < level) decided_vars.push_back(var_assignment_[i] == 1 ? -i : i);
+  }
+
+  // Sort vectors for consistent hashing
+  sort(undecided_vars.begin(), undecided_vars.end());
+  sort(decided_vars.begin(), decided_vars.end());
+
+  // // Compute hashes for cache key
+  // size_t undecided_hash = 0;
+  // for(int var : undecided_vars) {
+  //   undecided_hash = undecided_hash * 31 + var;
+  // }
+  
+  // size_t decided_hash = 0;
+  // for(int var : decided_vars) {
+  //   decided_hash = decided_hash * 31 + var;
+  // }
+
+  // // Check cache first
+  // IndependentSupportCacheKey cache_key{level, undecided_hash, decided_hash};
+  // auto cache_it = independent_support_cache_.find(cache_key);
+  // if(cache_it != independent_support_cache_.end()) {
+  //   cache_hits_++;
+  //   cout << "Cache hit for level " << level << " with " << undecided_vars.size() << " undecided vars (hits: " << cache_hits_ << ", misses: " << cache_misses_ << ")" << endl;
+  //   level_independent_support[level] = cache_it->second;
+  //   return;
+  // }
+  // cache_misses_++;
+  // cout << "Cache miss for level " << level << " with " << undecided_vars.size() << " undecided vars (hits: " << cache_hits_ << ", misses: " << cache_misses_ << ")" << endl;
+
+  // print decided_vars
+  // cout << "Decided vars: "; 
+  // for(auto var : decided_vars) cout << var << " ";
+  // cout << endl;
+
+  for(int i = 0; i < undecided_vars.size(); i++){
+
+    // vector<int> assumptions={undecided_vars[i], -undecided_vars[i]-(int)(statistics_.num_variables_)};
+    vector<int> assumptions;
+    // cout << "Added assumption: " << undecided_vars[i] << " " << -undecided_vars[i]-(int)(statistics_.num_variables_) << endl;
+    // cout << "Decided vars size: " << decided_vars.size() << endl;
+    if(decided_vars.size() > 0){
+      for(auto d_var : decided_vars){
+        assumptions.push_back(d_var);
+        // cout << "Added assumption: " << d_var << endl;
+      }
+    }
+    // cout << "Added independent vars" << endl;
+    // add the variables in level_independent_support[level]
+    if(level >= 0 && level < (int)level_independent_support.size() && level_independent_support[level].size() > 0){
+      for(auto ind_var : level_independent_support[level]){
+        assumptions.push_back(ind_var+(int)(statistics_.num_variables_*2));
+        // cout << "Added assumption: " << ind_var+(int)(statistics_.num_variables_*2) << endl;
+    }
+    }
+    // add the variables in undecided_vars
+    for(int j = i+1; j < undecided_vars.size(); j++){
+      // cout << "Added assumption: " << undecided_vars[j]+(int)(statistics_.num_variables_*2) << endl;
+      assumptions.push_back(undecided_vars[j]+(int)(statistics_.num_variables_*2));
+    }
+    if(level >= 0 && level < (int)level_cadical_solvers_.size()) {
+      level_cadical_solvers_[level]->add_assumptions(assumptions);
+      level_cadical_solvers_[level]->add_assumptions({undecided_vars[i], -undecided_vars[i]-(int)(statistics_.num_variables_)});
+      // solve the solver
+      // cout << "Solving solver" << endl;
+      auto res = level_cadical_solvers_[level]->solve();
+    if(res != 20 && level >= 0 && level < (int)level_independent_support.size()){ // 0: UNKNOWN, 10: SAT, 20: UNSAT
+      level_independent_support[level].insert(undecided_vars[i]);
+    };
+
+    if(res == 10){
+      cout << undecided_vars[i] << " SAT" << endl;
+    }
+    else if(res == 20){
+      cout << undecided_vars[i] << " UNSAT" << endl;
+      // test assumptions var = 0
+      // if(level >= 0 && level < (int)level_cadical_solvers_.size()) {
+      //   level_cadical_solvers_[level]->add_assumptions(decided_vars);
+      //   level_cadical_solvers_[level]->add_assumptions({undecided_vars[i]});
+      //   res = level_cadical_solvers_[level]->solve();
+      //   // char* res_string = (res == 20)? " UNSAT" : " SAT";
+      //   cout << i << " = 0" << (res == 20 ? " UNSAT" : " SAT") << endl;
+
+      //           //test assumptions var = 1
+      //   level_cadical_solvers_[level]->add_assumptions(decided_vars);
+      //   level_cadical_solvers_[level]->add_assumptions({-undecided_vars[i]});
+      //   res = level_cadical_solvers_[level]->solve();
+      //   // char* res_string = ;
+      //   cout << i << " = 1" << ((res == 20)? " UNSAT" : " SAT") << endl;
+      // }
+
+      //test assumptions var = 0 and var = 1
+      
+    }
+    } else {
+      cout << undecided_vars[i] << " UNKNOWN" << endl;
+    }
+    // get the solution
+
+
+  }
+
+
+  if(level >= 0 && level < (int)level_independent_support.size()) {
+    cout << "Independent vars: " << level_independent_support[level].size() << endl;
+    for(auto var : level_independent_support[level]) cout << var << " ";
+    cout << endl;
+    
+  //   // Store result in cache (deep copy)
+  //   independent_support_cache_[cache_key] = std::set<int>(level_independent_support[level].begin(), level_independent_support[level].end());
+  //   cout << "Cached result for level " << level << " (cache size: " << independent_support_cache_.size() << ")" << endl;
+    
+  //   // Clear cache if it gets too large (to prevent memory issues)
+  //   if(independent_support_cache_.size() > 1000) {
+  //     cout << "Cache size limit reached, clearing cache" << endl;
+  //     clearIndependentSupportCache();
+  //   }
+  //   // Additional memory monitoring - clear if cache is consuming too much memory
+  //   else if(getIndependentSupportCacheSize() > 50 * 1024 * 1024) { // 50MB limit
+  //     cout << "Cache memory limit reached, clearing cache" << endl;
+  //     clearIndependentSupportCache();
+  //   }
+  // } else {
+  //   cout << "Independent vars: 0 (level out of bounds)" << endl;
+  }
+  // assert(level_independent_support[level].size() > 0);
 }
 
 retStateT Solver::backtrack() {
@@ -530,6 +771,12 @@ retStateT Solver::backtrack() {
 
     if (stack_.get_decision_level() <= 0)
       break;
+    
+    // Clear independent support cache during backtracking to prevent stale cache entries
+    // if(config_.perform_independent_solving && independent_support_cache_.size() > 100) {
+    //   clearIndependentSupportCache();
+    // }
+    
     reactivateTOS();
 
     assert(stack_.size()>=2);
@@ -580,7 +827,7 @@ retStateT Solver::resolveConflict() {
   }
 
   Antecedent ant(NOT_A_CLAUSE);
-  if ( uip_clauses_.back().front() == TOS_decLit().neg() && config_.perform_clause_learning ) {
+  if ( !uip_clauses_.empty() && uip_clauses_.back().front() == TOS_decLit().neg() && config_.perform_clause_learning ) {
     assert(TOS_decLit().neg() == uip_clauses_.back()[0]);
     var(TOS_decLit().neg()).ante = addUIPConflictClause(uip_clauses_.back());
     ant = var(TOS_decLit()).ante;
@@ -881,6 +1128,12 @@ void Solver::recordLastUIPCauses() {
 // antecedent and set to unseen
   assert(state_.name == STATE_CONFLICT);
 
+  // Safety check: ensure violated_clause is not empty
+  if (state_.violated_clause.empty()) {
+    cout << "Warning: violated_clause is empty in recordLastUIPCauses" << endl;
+    return;
+  }
+
   bool seen[num_variables() + 1];
   memset(seen, false, sizeof(bool) * (num_variables() + 1));
 
@@ -895,6 +1148,11 @@ void Solver::recordLastUIPCauses() {
   unsigned lits_at_current_dl = 0;
 
   for (auto l : state_.violated_clause) {
+    // Safety check: ensure literal is valid
+    if (l.var() <= 0 || l.var() > num_variables()) {
+      cout << "Warning: Invalid literal " << l.toInt() << " in violated_clause" << endl;
+      continue;
+    }
     if (var(l).decision_level == 0 || existsUnitClauseOf(l.var()))
       continue;
     if (var(l).decision_level < DL)
@@ -909,6 +1167,12 @@ void Solver::recordLastUIPCauses() {
   while (lits_at_current_dl) {
     assert(lit_stack_ofs != 0);
     curr_lit = literal_stack_[--lit_stack_ofs];
+
+    // Safety check: ensure curr_lit is valid
+    if (curr_lit.var() <= 0 || curr_lit.var() > num_variables()) {
+      cout << "Warning: Invalid literal " << curr_lit.toInt() << " in literal_stack" << endl;
+      continue;
+    }
 
     if (!seen[curr_lit.var()])
       continue;
@@ -957,10 +1221,15 @@ void Solver::recordLastUIPCauses() {
     }
   }
 
-  minimizeAndStoreUIPClause(curr_lit.neg(), tmp_clause, seen);
+  // Safety check: ensure curr_lit is valid before calling minimizeAndStoreUIPClause
+  if (curr_lit.var() > 0 && curr_lit.var() <= num_variables()) {
+    minimizeAndStoreUIPClause(curr_lit.neg(), tmp_clause, seen);
 
-  if (var(curr_lit).decision_level > assertion_level_)
-    assertion_level_ = var(curr_lit).decision_level;
+    if (var(curr_lit).decision_level > assertion_level_)
+      assertion_level_ = var(curr_lit).decision_level;
+  } else {
+    cout << "Warning: Invalid curr_lit in recordLastUIPCauses, skipping minimizeAndStoreUIPClause" << endl;
+  }
 }
 
 void Solver::recordAllUIPCauses() {
@@ -970,6 +1239,12 @@ void Solver::recordAllUIPCauses() {
 // antecedent and set to unseen
 
   assert(state_.name == STATE_CONFLICT);
+
+  // Safety check: ensure violated_clause is not empty
+  if (state_.violated_clause.empty()) {
+    cout << "Warning: violated_clause is empty in recordAllUIPCauses" << endl;
+    return;
+  }
 
   bool seen[num_variables() + 1];
   memset(seen, false, sizeof(bool) * (num_variables() + 1));
@@ -985,6 +1260,11 @@ void Solver::recordAllUIPCauses() {
   unsigned lits_at_current_dl = 0;
 
   for (auto l : state_.violated_clause) {
+    // Safety check: ensure literal is valid
+    if (l.var() <= 0 || l.var() > num_variables()) {
+      cout << "Warning: Invalid literal " << l.toInt() << " in violated_clause" << endl;
+      continue;
+    }
     if (var(l).decision_level == 0 || existsUnitClauseOf(l.var()))
       continue;
     if (var(l).decision_level < DL)
@@ -999,6 +1279,12 @@ void Solver::recordAllUIPCauses() {
   while (lits_at_current_dl) {
     assert(lit_stack_ofs != 0);
     curr_lit = literal_stack_[--lit_stack_ofs];
+
+    // Safety check: ensure curr_lit is valid
+    if (curr_lit.var() <= 0 || curr_lit.var() > num_variables()) {
+      cout << "Warning: Invalid literal " << curr_lit.toInt() << " in literal_stack" << endl;
+      continue;
+    }
 
     if (!seen[curr_lit.var()])
       continue;
@@ -1049,7 +1335,12 @@ void Solver::recordAllUIPCauses() {
     }
   }
   if (!hasAntecedent(curr_lit)) {
-    minimizeAndStoreUIPClause(curr_lit.neg(), tmp_clause, seen);
+    // Safety check: ensure curr_lit is valid before calling minimizeAndStoreUIPClause
+    if (curr_lit.var() > 0 && curr_lit.var() <= num_variables()) {
+      minimizeAndStoreUIPClause(curr_lit.neg(), tmp_clause, seen);
+    } else {
+      cout << "Warning: Invalid curr_lit in recordAllUIPCauses, skipping minimizeAndStoreUIPClause" << endl;
+    }
   }
   if (var(curr_lit).decision_level > assertion_level_)
     assertion_level_ = var(curr_lit).decision_level;

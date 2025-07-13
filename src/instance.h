@@ -11,6 +11,11 @@
 #include "basic_types.h"
 #include "structures.h"
 #include "containers.h"
+#ifdef CADICAL_SOLVER
+#include "cadical_integration.h"
+#else
+#include "kissat_integration.h"
+#endif
 
 #include <assert.h>
 
@@ -21,6 +26,29 @@ typedef pair<QType,Vars>           QLevel;
 typedef vector<QLevel>             Prefix;
 
 class Instance {
+public:
+  // Destructor to clean up solvers
+  ~Instance() {
+#ifdef CADICAL_SOLVER
+    std::cout << "Instance destructor called, cleaning up " << level_cadical_solvers_.size() << " cadical solvers" << std::endl;
+    for (auto solver : level_cadical_solvers_) {
+      if (solver) {
+        delete solver;
+      }
+    }
+    level_cadical_solvers_.clear();
+#else
+    std::cout << "Instance destructor called, cleaning up " << level_kissat_solvers_.size() << " kissat solvers" << std::endl;
+    for (auto solver : level_kissat_solvers_) {
+      if (solver) {
+        delete solver;
+      }
+    }
+    level_kissat_solvers_.clear();
+#endif
+    std::cout << "Instance destructor completed" << std::endl;
+  }
+
 protected:
 
   void unSet(LiteralID lit) {
@@ -106,7 +134,48 @@ protected:
     return variables_.size() - 1;
   }
 
-  bool createfromFile(const string &file_name);
+  bool createfromFile(const string &file_name, SolverConfiguration& config);
+  
+  // Clean up solvers
+#ifdef CADICAL_SOLVER
+  void cleanupcadicalSolvers() {
+    for (auto solver : level_cadical_solvers_) {
+      if (solver) {
+        delete solver;
+      }
+    }
+    level_cadical_solvers_.clear();
+  }
+  
+  // Check if cadical solvers are initialized
+  bool arecadicalSolversInitialized() const {
+    return !level_cadical_solvers_.empty();
+  }
+  
+  // Get number of cadical solvers
+  size_t getNumcadicalSolvers() const {
+    return level_cadical_solvers_.size();
+  }
+#else
+  void cleanupKissatSolvers() {
+    for (auto solver : level_kissat_solvers_) {
+      if (solver) {
+        delete solver;
+      }
+    }
+    level_kissat_solvers_.clear();
+  }
+  
+  // Check if kissat solvers are initialized
+  bool areKissatSolversInitialized() const {
+    return !level_kissat_solvers_.empty();
+  }
+  
+  // Get number of kissat solvers
+  size_t getNumKissatSolvers() const {
+    return level_kissat_solvers_.size();
+  }
+#endif
 
 
   DataAndStatistics statistics_;
@@ -141,6 +210,14 @@ protected:
   vector<int>     var2Lev_;
   vector<size_t>  orderedVar_; // ordered var follows the prefix, used when certification
   // end ssat & wmc
+
+  // Incremental SAT for each quantifier level
+#ifdef CADICAL_SOLVER
+  vector<CaDiCaLWrapper*> level_cadical_solvers_;
+#else
+  vector<KissatWrapper*> level_kissat_solvers_;
+#endif
+  vector<int> var_assignment_;
   
 
   void decayActivities() {

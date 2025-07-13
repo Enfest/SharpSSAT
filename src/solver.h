@@ -12,6 +12,8 @@
 #include "basic_types.h"
 #include "instance.h"
 #include "component_management.h"
+#include <set>
+#include <map>
 
 
 enum retStateT {
@@ -108,6 +110,94 @@ private:
   vector<int>   univ_imp_;      // temp vec holding universal implication literals
   vector<int>   random_imp_;    // temp vec holding random implication literals
   string        DNNF_filename_; // output dec-DNNF filname
+
+  // independent supportsolving
+  int current_level_ = -1;
+  vector<set<int>> level_independent_support;
+  
+  // // Cache for independent support computation
+  // // Maps from (level, undecided_vars_hash, decided_vars_hash) to independent support set
+  // struct IndependentSupportCacheKey {
+  //   int level;
+  //   size_t undecided_hash;
+  //   size_t decided_hash;
+    
+  //   bool operator<(const IndependentSupportCacheKey& other) const {
+  //     if (level != other.level) return level < other.level;
+  //     if (undecided_hash != other.undecided_hash) return undecided_hash < other.undecided_hash;
+  //     return decided_hash < other.decided_hash;
+  //   }
+  // };
+  
+  // map<IndependentSupportCacheKey, set<int>> independent_support_cache_;
+  
+  // // Cache statistics
+  // size_t cache_hits_ = 0;
+  // size_t cache_misses_ = 0;
+  
+  void find_independent_support(int level);
+  
+  // // Cache management
+  // void clearIndependentSupportCache() {
+  //   independent_support_cache_.clear();
+  //   cache_hits_ = 0;
+  //   cache_misses_ = 0;
+  //   cout << "Independent support cache cleared" << endl;
+  // }
+  
+  // size_t getIndependentSupportCacheSize() const {
+  //   return independent_support_cache_.size();
+  // }
+  
+  // // Estimate memory usage of cache in bytes
+  // size_t estimateCacheMemoryUsage() const {
+  //   size_t total_size = 0;
+  //   for(const auto& entry : independent_support_cache_) {
+  //     // Key size: level (int) + 2 hashes (size_t)
+  //     total_size += sizeof(int) + 2 * sizeof(size_t);
+  //     // Value size: set of integers
+  //     total_size += entry.second.size() * sizeof(int);
+  //     // Overhead for std::set and std::map
+  //     total_size += 64; // Approximate overhead per entry
+  //   }
+  //   return total_size;
+  // }
+  
+  // // Smart cache management based on multiple criteria
+  // bool shouldClearCache() const {
+  //   // Clear if too many entries
+  //   if(independent_support_cache_.size() > 1000) return true;
+    
+  //   // Clear if memory usage is too high (50MB)
+  //   if(estimateCacheMemoryUsage() > 50 * 1024 * 1024) return true;
+    
+  //   // Clear if hit rate is very low (less than 10% with significant misses)
+  //   if(cache_misses_ > 100 && cache_hits_ < cache_misses_ / 10) return true;
+    
+  //   return false;
+  // }
+  
+  // // Validate cache consistency with current solver state
+  // bool isCacheConsistent() const {
+  //   // Check if current level is reasonable
+  //   if(current_level_ < -1 || current_level_ > statistics_.num_qlev) return false;
+    
+  //   // Check if level_independent_support size matches expected size
+  //   if(level_independent_support.size() != statistics_.num_qlev + 1) return false;
+    
+  //   return true;
+  // }
+  
+  // void printIndependentSupportCacheStats() const {
+  //   cout << "Independent Support Cache Stats:" << endl;
+  //   cout << "  Cache size: " << independent_support_cache_.size() << endl;
+  //   cout << "  Estimated memory usage: " << estimateCacheMemoryUsage() / (1024 * 1024) << " MB" << endl;
+  //   cout << "  Cache hits: " << cache_hits_ << endl;
+  //   cout << "  Cache misses: " << cache_misses_ << endl;
+  //   if(cache_hits_ + cache_misses_ > 0) {
+  //     cout << "  Hit rate: " << (double)cache_hits_ / (cache_hits_ + cache_misses_) * 100 << "%" << endl;
+  //   }
+  // }
 
   bool simplePreProcess();
   bool prepFailedLiteralTest();
@@ -238,6 +328,14 @@ private:
     // initialize the stack to contain at least level zero
     stack_.push_back(StackLevel(1, 0, 2));
     stack_.back().changeBranch();
+    
+    // Initialize level_independent_support with proper size
+    level_independent_support.clear();
+    level_independent_support.resize(statistics_.num_qlev + 1);
+    
+    // Clear independent support cache and reset statistics
+    // clearIndependentSupportCache();
+    current_level_ = -1; // Reset current level for consistency
   }
 
   // will be called only after preprocessing
