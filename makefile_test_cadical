@@ -1,0 +1,20 @@
+CXX = g++
+CXXFLAGS = -O3 -std=c++11 -DCADICAL_SOLVER -I../cadical/src
+LIBS = -lgmpxx -lgmp
+
+CADICAL_LIB = ../cadical/build/libcadical.a
+
+all: test_cadical_simple
+
+test_cadical_simple: test_cadical_simple.cpp src/cadical_integration.cpp $(CADICAL_LIB)
+	$(CXX) $(CXXFLAGS) -o test_cadical_simple test_cadical_simple.cpp src/cadical_integration.cpp $(CADICAL_LIB) $(LIBS)
+
+$(CADICAL_LIB):
+	@echo "Building CaDiCaL library..."
+	cd ../cadical && ./configure && make
+	@echo "CaDiCaL library built successfully"
+
+clean:
+	rm -f test_cadical_simple
+
+.PHONY: all clean 

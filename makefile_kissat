@@ -1,0 +1,117 @@
+RM := rm -rf
+SUBDIRS := \
+src \
+
+# Add inputs and outputs from these tool invocations to the build variables 
+CPP_SRCS := \
+./src/strategy.cpp \
+./src/basic_types.cpp \
+./src/component_management.cpp \
+./src/component_types.cpp \
+./src/instance.cpp \
+./src/main_kissat.cpp \
+./src/solver.cpp \
+./src/kissat_integration.cpp \
+./src/kissat_solver.cpp 
+
+OBJS := \
+strategy.o \
+basic_types.o \
+component_management.o \
+component_types.o \
+instance.o \
+main_kissat.o \
+solver.o \
+kissat_integration.o \
+kissat_solver.o 
+
+CPP_DEPS := \
+strategy.d \
+basic_types.d \
+component_management.d \
+component_types.d \
+instance.d \
+main_kissat.d \
+solver.d \
+kissat_integration.d \
+kissat_solver.d 
+
+%.o: ./src/%.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: GCC C++ Compiler'
+	g++ -O3 -std=c++11 -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+# Kissat library path and flags
+KISSAT_DIR := ../kissat
+KISSAT_LIB := $(KISSAT_DIR)/build/libkissat.a
+KISSAT_INCLUDE := -I$(KISSAT_DIR)/src
+
+LIBS := -lgmpxx -lgmp
+
+# All Target
+all: SharpSSAT-Kissat test_kissat_per_level test_kissat_incremental
+
+# Tool invocations
+SharpSSAT-Kissat: $(OBJS) $(KISSAT_LIB)
+	@echo 'Building target: $@'
+	@echo 'Invoking: GCC C++ Linker'
+	g++ -L/usr/lib/ -o "SharpSSAT-Kissat" $(OBJS) $(KISSAT_LIB) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+# Test program
+test_kissat_per_level: test_kissat_per_level.o $(OBJS) $(KISSAT_LIB)
+	@echo 'Building target: $@'
+	@echo 'Invoking: GCC C++ Linker'
+	g++ -L/usr/lib/ -o "test_kissat_per_level" test_kissat_per_level.o $(OBJS) $(KISSAT_LIB) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+test_kissat_per_level.o: test_kissat_per_level.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: GCC C++ Compiler'
+	g++ -O3 -std=c++11 -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
+	@echo 'Finished building file: $<'
+	@echo ' '
+
+# Incremental test program
+test_kissat_incremental: test_kissat_incremental.o $(OBJS) $(KISSAT_LIB)
+	@echo 'Building target: $@'
+	@echo 'Invoking: GCC C++ Linker'
+	g++ -L/usr/lib/ -o "test_kissat_incremental" test_kissat_incremental.o $(OBJS) $(KISSAT_LIB) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+test_kissat_incremental.o: test_kissat_incremental.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: GCC C++ Compiler'
+	g++ -O3 -std=c++11 -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
+	@echo 'Finished building file: $<'
+	@echo ' '
+
+# Build Kissat library if needed
+$(KISSAT_LIB):
+	@echo 'Building Kissat library...'
+	cd $(KISSAT_DIR) && ./configure && make
+	@echo 'Kissat library built successfully'
+
+# Other Targets
+clean:
+	-$(RM) $(OBJS)$(CPP_DEPS) SharpSSAT-Kissat
+	-@echo ' '
+
+clean-kissat:
+	cd $(KISSAT_DIR) && make clean
+	-@echo ' '
+
+clean-all: clean clean-kissat
+
+.PHONY: all clean clean-kissat clean-all dependents
+
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(CPP_DEPS)),)
+-include $(CPP_DEPS)
+endif
+endif 

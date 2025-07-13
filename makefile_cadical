@@ -1,0 +1,84 @@
+RM := rm -rf
+SUBDIRS := \
+src \
+
+# Add inputs and outputs from these tool invocations to the build variables 
+CPP_SRCS := \
+./src/strategy.cpp \
+./src/basic_types.cpp \
+./src/component_management.cpp \
+./src/component_types.cpp \
+./src/instance.cpp \
+./src/main.cpp \
+./src/solver.cpp \
+./src/cadical_integration.cpp
+
+OBJS := \
+strategy.o \
+basic_types.o \
+component_management.o \
+component_types.o \
+instance.o \
+main.o \
+solver.o \
+cadical_integration.o
+
+CPP_DEPS := \
+strategy.d \
+basic_types.d \
+component_management.d \
+component_types.d \
+instance.d \
+main.d \
+solver.d \
+cadical_integration.d
+
+%.o: ./src/%.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: GCC C++ Compiler'
+	g++ -O3 -std=c++11 -DCADICAL_SOLVER -c -fmessage-length=0 -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@:%.o=%.d)" -o "$@" "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+# CaDiCaL library path and flags
+CADICAL_DIR := ../cadical
+CADICAL_LIB := $(CADICAL_DIR)/build/libcadical.a
+CADICAL_INCLUDE := -I$(CADICAL_DIR)/src
+
+LIBS := -lgmpxx -lgmp
+
+# All Target
+all: SharpSSAT-CaDiCaL
+
+# Tool invocations
+SharpSSAT-CaDiCaL: $(OBJS) $(CADICAL_LIB)
+	@echo 'Building target: $@'
+	@echo 'Invoking: GCC C++ Linker'
+	g++ -L/usr/lib/ -o "SharpSSAT-CaDiCaL" $(OBJS) $(CADICAL_LIB) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+# Build CaDiCaL library if needed
+$(CADICAL_LIB):
+	@echo 'Building CaDiCaL library...'
+	cd $(CADICAL_DIR) && ./configure && make
+	@echo 'CaDiCaL library built successfully'
+
+# Other Targets
+clean:
+	-$(RM) $(OBJS) $(CPP_DEPS) SharpSSAT-CaDiCaL
+	-@echo ' '
+
+clean-cadical:
+	cd $(CADICAL_DIR) && make clean
+	-@echo ' '
+
+clean-all: clean clean-cadical
+
+.PHONY: all clean clean-cadical clean-all dependents
+
+ifneq ($(MAKECMDGOALS),clean)
+ifneq ($(strip $(CPP_DEPS)),)
+-include $(CPP_DEPS)
+endif
+endif 
